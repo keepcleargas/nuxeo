@@ -23,6 +23,7 @@ package org.nuxeo.ecm.core.api.impl;
 import static org.nuxeo.ecm.core.schema.types.ComplexTypeImpl.canonicalXPath;
 
 import java.io.Serializable;
+import java.util.Calendar;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -652,6 +653,26 @@ public class SimpleDocumentModel implements DocumentModel {
     @Override
     public boolean isVersionSeriesCheckedOut() {
         return true;
+    }
+
+    @Override
+    public boolean isRecord() {
+        return false;
+    }
+
+    @Override
+    public Calendar getRetainUntil() {
+        return null;
+    }
+
+    @Override
+    public boolean hasLegalHold() {
+        return false;
+    }
+
+    @Override
+    public boolean isUnderRetentionOrLegalHold() {
+        return false;
     }
 
     @Override
