@@ -133,4 +133,20 @@ public class DirectoryObject extends PaginableObject<DirectoryEntry> {
 
     }
 
+    @POST @Path("loadCSV") //TODO effacer
+    public Response loadCSV(@PathParam("directoryName") String directoryName, @PathParam("duplicateManagement") String duplicateManagement) {
+
+        checkEditGuards();
+        Void result = withDirectorySession(directory, new DirectorySessionRunner<Void>() {
+
+            @Override
+            Void run(Session session) {
+                if (!directory.isReadOnly()) {
+                   // directory.loadFromCsv(dataFile, false, duplicateManagement);
+                }
+                return null;
+            }
+        });
+        return Response.ok(result).status(Status.CREATED).build();
+    }
 }

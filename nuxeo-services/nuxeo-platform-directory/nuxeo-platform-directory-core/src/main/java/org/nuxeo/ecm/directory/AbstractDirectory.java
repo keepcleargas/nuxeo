@@ -20,6 +20,9 @@
 
 package org.nuxeo.ecm.directory;
 
+import static org.nuxeo.ecm.directory.BaseDirectoryDescriptor.CREATE_TABLE_POLICY_NEVER;
+import static org.nuxeo.ecm.directory.BaseDirectoryDescriptor.DataLoadingPolicy.NEVER_LOAD;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -27,8 +30,11 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.function.Consumer;
 
 import org.apache.commons.lang3.StringUtils;
+import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.DocumentModel;
 import org.nuxeo.ecm.core.api.DocumentModelComparator;
 import org.nuxeo.ecm.core.cache.CacheService;
@@ -37,6 +43,7 @@ import org.nuxeo.ecm.core.query.sql.model.OrderByList;
 import org.nuxeo.ecm.core.schema.SchemaManager;
 import org.nuxeo.ecm.core.schema.types.Field;
 import org.nuxeo.ecm.core.schema.types.Schema;
+import org.nuxeo.ecm.directory.BaseDirectoryDescriptor.DataLoadingPolicy;
 import org.nuxeo.ecm.directory.api.DirectoryDeleteConstraint;
 import org.nuxeo.runtime.api.Framework;
 import org.nuxeo.runtime.metrics.MetricsService;
@@ -112,15 +119,93 @@ public abstract class AbstractDirectory implements Directory {
         initSchemaFieldMap();
     }
 
-    protected void loadData() {
-        if (descriptor.getDataFileName() != null) {
+    /**
+     * Called on Directory initialisation, depending on "createTablePolicy". Will check the Directory "duplicatePolicy"
+     * config to append or not new data.
+     *
+     * @param isEmptyDir <code>false</code>if the Directory contains already some data, <code>true</code> if the
+     *            Directory (table or Collection) has been re-created (and is empty).
+     */
+    protected void loadData(boolean isEmptyDir) {
+        String dataFileName = descriptor.getDataFileName();
+        if (dataFileName != null) {
+            DataLoadingPolicy dataLoadingPolicy = descriptor.getDataLoadingPolicy();
+            if(descriptor.getCreateTablePolicy().equals(CREATE_TABLE_POLICY_NEVER) && dataLoadingPolicy.equals(NEVER_LOAD)) {
+                return;
+            }
+            Blob blob = DirectoryCSVLoader.callCreateBlob(dataFileName);
+            if (isEmptyDir) {  //Directory is empty on first creation or if dropped.
+                loadFromCsv(blob, isEmptyDir, descriptor.getDataLoadingPolicy().toString());
+            } else {
+                //we reload the data depending on the dataLoadingPolicy
+                if (!DataLoadingPolicy.NEVER_LOAD.equals(dataLoadingPolicy) && !descriptor.isAutoincrementIdField()) {
+                    loadFromCsv(blob, isEmptyDir, dataLoadingPolicy.toString());
+                }
+            }
+        }
+    }
+
+    @Override
+    public void loadFromCsv(Blob csvDataFile, boolean isEmptyDir, String duplicateManagement) {
+        if (csvDataFile != null && !isReadOnly()) {
+            DataLoadingPolicy dataLoadingPolicy = DataLoadingPolicy.valueOfUpperCase(
+                    Objects.requireNonNull(duplicateManagement, "param duplicateManagement must NOT be null"));
             try (Session session = getSession()) {
                 TransactionHelper.runInTransaction(() -> Framework.doPrivileged(() -> {
                     Schema schema = Framework.getService(SchemaManager.class).getSchema(getSchema());
-                    DirectoryCSVLoader.loadData(descriptor.getDataFileName(),
-                            descriptor.getDataFileCharacterSeparator(), schema,
-                            ((BaseSession) session)::createEntryWithoutReferences);
+                    if (isEmptyDir) {
+                        DirectoryCSVLoader.loadData(csvDataFile, descriptor.getDataFileCharacterSeparator(), schema,
+                                ((BaseSession) session)::createEntryWithoutReferences);
+                    } else {
+                        Consumer<Map<String, Object>> loader = new CSVLoaderConsumer(dataLoadingPolicy, session);
+                        DirectoryCSVLoader.loadData(csvDataFile, descriptor.getDataFileCharacterSeparator(), schema,
+                                loader);
+                        invalidateCaches();
+                    }
                 }));
+            }
+        }
+    }
+
+    protected class CSVLoaderConsumer implements Consumer<Map<String, Object>> {
+
+        private final DataLoadingPolicy dataLoadingPolicy;
+
+        private final Session session;
+
+        public CSVLoaderConsumer(DataLoadingPolicy dataLoadingPolicy, Session session) {
+            this.dataLoadingPolicy = Objects.requireNonNull(dataLoadingPolicy, "duplicatePolicy is null");
+            this.session = Objects.requireNonNull(session, "session is null");
+        }
+
+        @Override
+        public void accept(Map<String, Object> fieldMap) {
+            // check if record already exist
+            boolean alreadyExist = false;
+            Field schemaIdField = getSchemaFieldMap().get(getIdField());
+            String idFieldName = schemaIdField.getName().getPrefixedName();
+            Object rawId = fieldMap.get(idFieldName);
+            if (rawId != null) {
+                DocumentModel dm = session.getEntry(String.valueOf(rawId));
+                if (dm != null) {
+                    alreadyExist = true;
+                    switch (dataLoadingPolicy) {
+                    case IGNORE_DUPLICATE:
+                        return;
+                    case ERROR_ON_DUPLICATE:
+                        throw new DirectoryException(String.format("Entry with id %s already exists in directory %s",
+                                dm.getId(), getName()));
+                    case UPDATE_DUPLICATE:
+                        fieldMap.forEach((fieldName, value) -> dm.setProperty(getSchema(), fieldName, value));
+                        ((BaseSession) session).updateEntryWithoutReferences(dm);
+                        break;
+                    default:
+                            throw new IllegalStateException("Unexpected value: " + dataLoadingPolicy);
+                    }
+                }
+            }
+            if (!alreadyExist) {
+                ((BaseSession) session).createEntryWithoutReferences(fieldMap);
             }
         }
     }

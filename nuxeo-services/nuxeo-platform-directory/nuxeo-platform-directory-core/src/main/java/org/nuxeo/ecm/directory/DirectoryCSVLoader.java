@@ -18,6 +18,8 @@
  */
 package org.nuxeo.ecm.directory;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -36,6 +38,9 @@ import org.apache.commons.csv.CSVRecord;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.nuxeo.common.utils.FileUtils;
+import org.nuxeo.ecm.core.api.Blob;
+import org.nuxeo.ecm.core.api.Blobs;
 import org.nuxeo.ecm.core.schema.types.Field;
 import org.nuxeo.ecm.core.schema.types.Schema;
 import org.nuxeo.ecm.core.schema.types.Type;
@@ -64,7 +69,7 @@ public class DirectoryCSVLoader {
     /**
      * Loads the CSV data file based on the provided schema, and creates the corresponding entries using the provided
      * loader.
-     *
+     * @see #loadData(Blob, char, Schema, Consumer)
      * @param dataFileName the file name containing CSV data
      * @param delimiter the CSV column separator
      * @param schema the data schema
@@ -73,9 +78,36 @@ public class DirectoryCSVLoader {
      */
     public static void loadData(String dataFileName, char delimiter, Schema schema,
             Consumer<Map<String, Object>> loader) {
-        try (InputStream in = getResource(dataFileName); //
+        Blob blob = callCreateBlob(dataFileName);
+        loadData(blob, delimiter, schema, loader);
+    }
+
+    protected static Blob callCreateBlob(String dataFileName) throws DirectoryException {
+        try {
+            return Blobs.createBlob(FileUtils.getResourceFileFromContext(dataFileName), "text/csv", UTF_8.name(),
+                    dataFileName);
+        } catch (IOException e) {
+            throw new DirectoryException("Read error while creating blob from data file: " + dataFileName, e);
+        }
+    }
+
+    /**
+     * Loads the CSV data file based on the provided schema, and creates the corresponding entries using the provided
+     * loader.
+     *
+     * @param csvDataFile the Blob file containing CSV data
+     * @param delimiter the CSV column separator
+     * @param schema the data schema
+     * @param loader the actual consumer of loaded rows
+     * @since 11.1
+     */
+    public static void loadData(Blob csvDataFile, char delimiter, Schema schema, Consumer<Map<String, Object>> loader) {
+
+        String dataFileName = csvDataFile.getFilename();
+        try (InputStream in = csvDataFile.getStream();
                 CSVParser csvParser = new CSVParser(new InputStreamReader(in, "UTF-8"),
                         CSVFormat.DEFAULT.withDelimiter(delimiter).withHeader())) {
+
             Map<String, Integer> header = csvParser.getHeaderMap();
 
             List<Field> fields = new ArrayList<>();

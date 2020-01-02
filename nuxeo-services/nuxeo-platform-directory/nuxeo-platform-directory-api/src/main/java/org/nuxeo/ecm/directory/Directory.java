@@ -24,6 +24,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
+import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.schema.types.Field;
 import org.nuxeo.ecm.directory.api.DirectoryDeleteConstraint;
 
@@ -58,6 +59,18 @@ public interface Directory {
      * @since 10.10
      */
     void initializeInverseReferences();
+
+    /**
+     * Load a CSV to a Directory
+     *
+     * @param csvDataFile the CSV Blob file to load (should be accessible in Resources
+     * @param isEmptyDir <code>true</code> if the Directory (table or Collection) has been re-created (and is empty),
+     *            <code>false</code> if the Directory contains already some data
+     * @param duplicateManagement the duplicate_management policy to load CSV data if Directory is already loaded; (Cf.
+     *            {@link BaseDirectoryDescriptor.DataLoadingPolicy}
+     * @since 11.1
+     */
+    void loadFromCsv(Blob csvDataFile, boolean isEmptyDir, String duplicateManagement);
 
     /**
      * Gets the unique name of the directory, used for registering.

@@ -49,17 +49,20 @@ import org.nuxeo.ecm.automation.OperationContext;
 import org.nuxeo.ecm.automation.OperationParameters;
 import org.nuxeo.ecm.automation.core.operations.services.directory.CreateDirectoryEntries;
 import org.nuxeo.ecm.automation.core.operations.services.directory.DeleteDirectoryEntries;
+import org.nuxeo.ecm.automation.core.operations.services.directory.LoadDirectoryWithCSV;
 import org.nuxeo.ecm.automation.core.operations.services.directory.ReadDirectoryEntries;
 import org.nuxeo.ecm.automation.core.operations.services.directory.SuggestDirectoryEntries;
 import org.nuxeo.ecm.automation.core.operations.services.directory.UpdateDirectoryEntries;
 import org.nuxeo.ecm.automation.core.util.Properties;
 import org.nuxeo.ecm.core.api.Blob;
+import org.nuxeo.ecm.core.api.Blobs;
 import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
 import org.nuxeo.ecm.core.api.DocumentModelList;
 import org.nuxeo.ecm.core.test.CoreFeature;
 import org.nuxeo.ecm.core.test.DefaultRepositoryInit;
 import org.nuxeo.ecm.core.test.annotations.RepositoryConfig;
+import org.nuxeo.ecm.directory.BaseDirectoryDescriptor;
 import org.nuxeo.ecm.directory.DirectoryException;
 import org.nuxeo.ecm.directory.Session;
 import org.nuxeo.ecm.directory.api.DirectoryService;
@@ -435,4 +438,26 @@ public class DirectoryOperationsTest {
         JSONAssert.assertEquals(expected, actual.getString(), true);
     }
 
+    /**
+     * @since 11.1
+     */
+    @Test
+    public void shouldLoadCsvToDirectory() throws Exception {
+        try (Session directorySession = directoryService.open("continent")) {
+            assertNull(directorySession.getEntry("atlantis"));
+
+            Map<String, Object> params = new HashMap<>();
+            params.put("directoryName", "continent");
+            params.put("duplicateManagement", BaseDirectoryDescriptor.DataLoadingPolicy.UPDATE_DUPLICATE.toString());
+            OperationParameters oparams = new OperationParameters(LoadDirectoryWithCSV.ID, params);
+            Blob blob = Blobs.createBlob(FileUtils.getResourceFileFromContext("testdirectorydata/continent_local.csv"), "text/csv", UTF_8.name(), ("testdirectorydata/continent_local.csv"));
+            ctx.setInput(blob);
+
+            OperationChain chain = new OperationChain("fakeChain");
+            chain.add(oparams);
+            service.run(ctx, chain);
+
+            assertNotNull(directorySession.getEntry("atlantis"));
+        }
+    }
 }

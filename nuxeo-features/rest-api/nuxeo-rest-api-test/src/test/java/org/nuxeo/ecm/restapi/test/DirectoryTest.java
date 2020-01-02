@@ -25,6 +25,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -39,13 +40,19 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.nuxeo.common.utils.FileUtils;
 import org.nuxeo.directory.test.DirectoryFeature;
+import org.nuxeo.ecm.automation.client.OperationRequest;
+import org.nuxeo.ecm.automation.client.RemoteException;
+import org.nuxeo.ecm.automation.client.model.Blob;
+import org.nuxeo.ecm.automation.client.model.FileBlob;
 import org.nuxeo.ecm.core.api.DocumentModel;
 import org.nuxeo.ecm.core.api.DocumentModelList;
 import org.nuxeo.ecm.core.io.registry.MarshallerHelper;
 import org.nuxeo.ecm.core.io.registry.context.RenderingContext.CtxBuilder;
 import org.nuxeo.ecm.core.test.annotations.Granularity;
 import org.nuxeo.ecm.core.test.annotations.RepositoryConfig;
+import org.nuxeo.ecm.directory.BaseDirectoryDescriptor;
 import org.nuxeo.ecm.directory.Session;
 import org.nuxeo.ecm.directory.api.DirectoryEntry;
 import org.nuxeo.ecm.directory.api.DirectoryService;
@@ -78,6 +85,9 @@ public class DirectoryTest extends BaseTest {
 
     @Inject
     TransactionalFeature txFeature;
+
+    @Inject
+    org.nuxeo.ecm.automation.client.Session clientSession;
 
     private static final String TESTDIRNAME = "testdir";
 
@@ -437,4 +447,19 @@ public class DirectoryTest extends BaseTest {
         return MarshallerHelper.objectToJson(new DirectoryEntry(dirName, dirEntry), CtxBuilder.get());
     }
 
+    @Test
+    public void testLoadDirectoryFromCsv() throws Exception {
+        Blob blob = new FileBlob(FileUtils.getResourceFileFromContext("directories/country.csv"));
+        OperationRequest loadCsv = clientSession.newRequest("Directory.LoadWithCSV")
+                .set("directoryName", "country")
+                .set("duplicateManagement", BaseDirectoryDescriptor.DataLoadingPolicy.ERROR_ON_DUPLICATE.toString().toLowerCase())
+                .setInput(blob);
+        try {
+            loadCsv.execute();
+            fail("testLoadDirectoryFromCsv with ERROR_ON_DUPLICATE should launch en exception");
+        } catch (RemoteException e) {
+            assertTrue("testLoadDirectoryFromCsv with ERROR_ON_DUPLICATE should launch en exception", e.getMessage().contains("already exists in directory"));
+        }
+
+    }
 }
