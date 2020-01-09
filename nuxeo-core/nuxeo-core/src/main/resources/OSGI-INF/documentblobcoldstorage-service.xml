@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<component name="org.nuxeo.ecm.core.blob.DocumentBlobColdStorageService" version="1.0.0">
+
+  <documentation>
+    Document Blob Cold Storage, allows the blob cold storage of the document.
+  </documentation>
+
+  <implementation class="org.nuxeo.ecm.core.blob.DocumentBlobColdStorageServiceImpl" />
+
+  <service>
+    <provide interface="org.nuxeo.ecm.core.blob.DocumentBlobColdStorageService" />
+  </service>
+
+</component>
