@@ -25,12 +25,15 @@ import static org.nuxeo.ecm.core.api.event.DocumentEventTypes.DOCUMENT_CREATED;
 import static org.nuxeo.ecm.core.api.event.DocumentEventTypes.DOCUMENT_REMOVED;
 import static org.nuxeo.ecm.core.api.event.DocumentEventTypes.DOCUMENT_UPDATED;
 import static org.nuxeo.ecm.platform.comment.CommentUtils.checkDocumentEventContext;
+import static org.nuxeo.ecm.platform.comment.CommentUtils.checkMailContent;
 import static org.nuxeo.ecm.platform.comment.CommentUtils.checkReceivedMail;
+import static org.nuxeo.ecm.platform.comment.CommentUtils.createUser;
 import static org.nuxeo.ecm.platform.comment.api.CommentEvents.COMMENT_ADDED;
 import static org.nuxeo.ecm.platform.comment.api.CommentEvents.COMMENT_REMOVED;
 import static org.nuxeo.ecm.platform.comment.api.CommentEvents.COMMENT_UPDATED;
 import static org.nuxeo.ecm.platform.comment.impl.AbstractCommentManager.COMMENT_ADDED_NOTIFICATION;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -50,9 +53,11 @@ import org.nuxeo.ecm.platform.comment.api.Comment;
 import org.nuxeo.ecm.platform.comment.api.CommentImpl;
 import org.nuxeo.ecm.platform.comment.api.CommentManager;
 import org.nuxeo.ecm.platform.ec.notification.NotificationConstants;
-import org.nuxeo.ecm.platform.ec.notification.service.NotificationService;
+import org.nuxeo.ecm.platform.notification.api.NotificationManager;
 import org.nuxeo.mail.SmtpMailServerFeature;
+import org.nuxeo.mail.SmtpMailServerFeature.MailMessage;
 import org.nuxeo.runtime.api.Framework;
+import org.nuxeo.runtime.test.runner.Deploy;
 import org.nuxeo.runtime.test.runner.Features;
 import org.nuxeo.runtime.test.runner.FeaturesRunner;
 import org.nuxeo.runtime.test.runner.TransactionalFeature;
@@ -64,8 +69,12 @@ import org.nuxeo.runtime.test.runner.TransactionalFeature;
 @Features({ NotificationCommentFeature.class, SmtpMailServerFeature.class })
 public abstract class AbstractTestCommentNotification {
 
+    protected static final String ADMINISTRATOR = "Administrator";
+
+    protected static final String ANY_COMMENT_MESSAGE = "any Comment message";
+
     @Inject
-    protected NotificationService notificationService;
+    protected NotificationManager notificationManager;
 
     @Inject
     protected CoreSession session;
@@ -136,6 +145,11 @@ public abstract class AbstractTestCommentNotification {
     }
 
     @Test
+    public void testCommentManagerType() {
+        assertEquals(getType(), commentManager.getClass());
+    }
+
+    @Test
     public void shouldNotifyWithTheRightCommentedDocument() {
         try (CapturingEventListener listener = new CapturingEventListener(COMMENT_ADDED, DOCUMENT_CREATED)) {
             Comment createdComment = createCommentAndAddSubscription(COMMENT_ADDED_NOTIFICATION, "Creation");
@@ -156,21 +170,98 @@ public abstract class AbstractTestCommentNotification {
             checkReceivedMail(emailsResult.getMails(), commentDocumentModel, commentedDocumentModel,
                     handledEvents.get(0), COMMENT_ADDED);
 
-
-            Comment reply = createComment(commentDocumentModel);
+            Comment reply = createComment(commentDocumentModel, ADMINISTRATOR, ANY_COMMENT_MESSAGE);
             DocumentModel replyDocumentModel = session.getDocument(new IdRef(reply.getId()));
             transactionalFeature.nextTransaction();
 
             handledEvents = listener.streamCapturedEvents()
-                    .filter(e -> COMMENT_ADDED.equals(e.getName()))
-                    .collect(Collectors.toList());
+                                    .filter(e -> COMMENT_ADDED.equals(e.getName()))
+                                    .collect(Collectors.toList());
             assertEquals(2, handledEvents.size());
 
             checkDocumentEventContext(handledEvents.get(1), replyDocumentModel, commentDocumentModel,
                     commentedDocumentModel);
-            checkReceivedMail(emailsResult.getMails(), replyDocumentModel, commentedDocumentModel,
-                    handledEvents.get(1), COMMENT_ADDED);
+            checkReceivedMail(emailsResult.getMails(), replyDocumentModel, commentedDocumentModel, handledEvents.get(1),
+                    COMMENT_ADDED);
         }
+    }
+
+    @Test
+    @Deploy("org.nuxeo.ecm.platform.comment:OSGI-INF/notification-subscription-contrib.xml")
+    public void testAutoSubscribingOnlyOnceToNewComments() {
+        try (CapturingEventListener listener = new CapturingEventListener(COMMENT_ADDED)) {
+            var users = new ArrayList<String>();
+            users.add(ADMINISTRATOR);
+            // first level comment
+            Comment createdComment = createUserAndComment(commentedDocumentModel.getId(), users, "john");
+
+            // The offset is equal to the number of mails received
+            int offset = 0;
+            int expectedSubscribers = 2;
+            int expectedHandledEvents = 1;
+
+            offset = checkNotifications(listener, createdComment, offset, expectedSubscribers, expectedHandledEvents);
+            expectedSubscribers += 1;
+            expectedHandledEvents += 1;
+
+            // second level comment by a user that DID NOT comment on first level
+            createdComment = createUserAndComment(createdComment.getId(), users, "jane");
+
+            offset = checkNotifications(listener, createdComment, offset, expectedSubscribers, expectedHandledEvents);
+            expectedSubscribers += 1;
+            expectedHandledEvents += 1;
+
+            // third level comment by a user that DID NOT comment on first NOR second level
+            createdComment = createUserAndComment(createdComment.getId(), users, "jacky");
+
+            offset = checkNotifications(listener, createdComment, offset, expectedSubscribers, expectedHandledEvents);
+            int mailCountExpected = offset;
+
+            // now commentedDocumentModel is Notifiable
+            commentedDocumentModel = session.getDocument(commentedDocumentModel.getRef());
+            for (String user : users) {
+                unsubscribeFromNewCommentsNotifications(commentedDocumentModel, user);
+            }
+            expectedSubscribers = 0;
+
+            // Commenting as already unsubscribed users doesn't resubscribe them
+            for (String user : users) {
+                expectedHandledEvents += 1;
+                DocumentModel commentDocumentModel = session.getDocument(new IdRef(createdComment.getId()));
+                createdComment = createComment(commentDocumentModel, user, "happily Notifying nobody");
+
+                offset = checkNotifications(listener, createdComment, offset, expectedSubscribers,
+                        expectedHandledEvents);
+
+                assertEquals(mailCountExpected, offset);
+            }
+        }
+    }
+
+    protected Comment createUserAndComment(String commentedDocModelId, List<String> users, String userName) {
+        DocumentModel commentedDocModel = session.getDocument(new IdRef(commentedDocModelId));
+        createUser(userName);
+        users.add(userName);
+        Comment createdComment = createComment(commentedDocModel, userName, "happy comment by " + userName);
+        assertEquals(commentedDocModelId, createdComment.getParentId());
+        return createdComment;
+    }
+
+    protected int checkNotifications(CapturingEventListener listener, Comment createdComment, int offset,
+            int expectedSubscribers, int expectedHandledEvents) {
+        transactionalFeature.nextTransaction();
+        List<MailMessage> mails = emailsResult.getMails();
+        List<Event> handledEvents = listener.getCapturedEvents();
+        assertEquals(expectedHandledEvents, handledEvents.size());
+
+        int expectedMailCount = offset + expectedSubscribers;
+        assertEquals(expectedMailCount, mails.size());
+        DocumentModel commentDocModel = session.getDocument(new IdRef(createdComment.getId()));
+        for (int i = offset; i < mails.size(); i++) {
+            checkMailContent(mails.get(i), commentDocModel, commentedDocumentModel,
+                    handledEvents.get(handledEvents.size() - 1), COMMENT_ADDED);
+        }
+        return mails.size();
     }
 
     protected void captureAndVerifyCommentEventNotification(Supplier<DocumentModel> supplier, String commentEventType,
@@ -195,28 +286,28 @@ public abstract class AbstractTestCommentNotification {
         }
     }
 
-    @Test
-    public void testCommentManagerType() {
-        assertEquals(getType(), commentManager.getClass());
+    protected Comment createComment(DocumentModel commentedDocModel, String author, String text) {
+        Comment comment = new CommentImpl();
+        comment.setAuthor(author);
+        comment.setText(text);
+        comment.setParentId(commentedDocModel.getId());
+
+        return commentManager.createComment(session, comment);
     }
 
     protected Comment createCommentAndAddSubscription(String... notifications) {
         NuxeoPrincipal principal = session.getPrincipal();
         String subscriber = NotificationConstants.USER_PREFIX + principal.getName();
         for (String notif : notifications) {
-            notificationService.addSubscription(subscriber, notif, commentedDocumentModel, false, principal, notif);
+            notificationManager.addSubscription(subscriber, notif, commentedDocumentModel, false, principal, notif);
         }
 
-        return createComment(commentedDocumentModel);
+        return createComment(commentedDocumentModel, ADMINISTRATOR, ANY_COMMENT_MESSAGE);
     }
 
-    protected Comment createComment(DocumentModel commentedDocModel) {
-        Comment comment = new CommentImpl();
-        comment.setAuthor("Administrator");
-        comment.setText("any Comment message");
-        comment.setParentId(commentedDocModel.getId());
-
-        return commentManager.createComment(session, comment);
+    protected void unsubscribeFromNewCommentsNotifications(DocumentModel document, String user) {
+        String subscriber = NotificationConstants.USER_PREFIX + user;
+        notificationManager.removeSubscription(subscriber, COMMENT_ADDED_NOTIFICATION, document);
     }
 
     protected abstract Class<? extends CommentManager> getType();
